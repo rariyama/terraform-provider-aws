@@ -82,6 +82,10 @@ func resourcePackageAssociationCreate(ctx context.Context, d *schema.ResourceDat
 
 	d.SetId(id)
 
+	if _, err := waitPackageAssociationCreated(ctx, conn, domainName, packageID, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Package Association (%s) create: %s", d.Id(), err)
+	}
+
 	return append(diags, resourcePackageAssociationRead(ctx, d, meta)...)
 }
 
@@ -135,6 +139,10 @@ func resourcePackageAssociationDelete(ctx context.Context, d *schema.ResourceDat
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "deleting OpenSearch Package Association (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitPackageAssociationDeleted(ctx, conn, domainName, packageID, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Package Association (%s) delete: %s", d.Id(), err)
 	}
 
 	return diags
@@ -206,4 +214,48 @@ func statusPackageAssociation(ctx context.Context, conn *opensearchservice.OpenS
 
 		return output, aws.StringValue(output.DomainPackageStatus), nil
 	}
+}
+
+func waitPackageAssociationCreated(ctx context.Context, conn *opensearchservice.OpenSearchService, domainName, packageID string, timeout time.Duration) (*opensearchservice.DomainPackageDetails, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: []string{opensearchservice.DomainPackageStatusAssociating},
+		Target:  []string{opensearchservice.DomainPackageStatusActive},
+		Refresh: statusPackageAssociation(ctx, conn, domainName, packageID),
+		Timeout: timeout,
+		Delay:   30 * time.Second,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*opensearchservice.DomainPackageDetails); ok {
+		if status, details := aws.StringValue(output.DomainPackageStatus), output.ErrorDetails; status == opensearchservice.DomainPackageStatusAssociationFailed && details != nil {
+			tfresource.SetLastError(err, fmt.Errorf("%s: %s", aws.StringValue(details.ErrorType), aws.StringValue(details.ErrorMessage)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}
+
+func waitPackageAssociationDeleted(ctx context.Context, conn *opensearchservice.OpenSearchService, domainName, packageID string, timeout time.Duration) (*opensearchservice.DomainPackageDetails, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: []string{opensearchservice.DomainPackageStatusDissociating},
+		Target:  []string{},
+		Refresh: statusPackageAssociation(ctx, conn, domainName, packageID),
+		Timeout: timeout,
+		Delay:   30 * time.Second,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*opensearchservice.DomainPackageDetails); ok {
+		if status, details := aws.StringValue(output.DomainPackageStatus), output.ErrorDetails; status == opensearchservice.DomainPackageStatusDissociationFailed && details != nil {
+			tfresource.SetLastError(err, fmt.Errorf("%s: %s", aws.StringValue(details.ErrorType), aws.StringValue(details.ErrorMessage)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
 }
